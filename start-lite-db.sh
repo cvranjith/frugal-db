@@ -116,6 +116,11 @@ file_size_bytes() {
 
 
 # ── preflight ─────────────────────────────────────────────────────────────────
+# Set by preflight(); used in every docker run call.
+# Empty on native x86_64 (--platform flag not needed and may fail on old Docker).
+# "--platform linux/amd64" on Apple Silicon / non-x86 hosts.
+DOCKER_PLATFORM=""
+
 preflight() {
   local ok=1
 
@@ -132,10 +137,14 @@ preflight() {
   docker info >/dev/null 2>&1 || {
     echo "ERROR: Docker daemon is not running (or DOCKER_HOST is not set correctly)." >&2; exit 1; }
 
-  # linux/amd64 support (the Oracle image is amd64-only)
+  # Detect host architecture.
+  # On native x86_64 we skip --platform (avoids failures on older Docker daemons).
+  # On non-x86 hosts (Apple Silicon, ARM) we need --platform linux/amd64 + emulation.
   local native; native=$(docker system info --format '{{.Architecture}}' 2>/dev/null || true)
-  if [[ "$native" != "x86_64" ]]; then
-    # Check emulation is available (Rosetta on Apple Silicon, QEMU on Linux)
+  if [[ "$native" == "x86_64" ]]; then
+    DOCKER_PLATFORM=""
+  else
+    DOCKER_PLATFORM="--platform linux/amd64"
     docker run --rm --platform linux/amd64 --entrypoint /bin/sh \
       busybox:latest -c 'exit 0' >/dev/null 2>&1 || {
       echo "ERROR: Docker cannot run linux/amd64 images on this host." >&2
@@ -268,7 +277,7 @@ _restore_volume() {
 
   printf '  Restoring %s (%dM)...\n' "$vol_base" "$sz_mb"
 
-  docker run --rm --platform linux/amd64 \
+  docker run --rm $DOCKER_PLATFORM \
     --user root --entrypoint /bin/bash \
     -v "${vol}:/opt/oracle/oradata" \
     -v "${vol_dir}:/backup:ro" \
@@ -530,7 +539,7 @@ shm_arg="${sga_size}"
 
 mkdir -p "$share_dir"
 echo "Starting container: $container_name  (SGA=$sga_size  PGA=$pga_size)"
-docker run -dit --name "$container_name" \
+docker run -dit $DOCKER_PLATFORM --name "$container_name" \
   --network "$network_name" \
   -p "$db_port:1521" \
   -e ORACLE_SID="$oracle_sid" \
