@@ -1,0 +1,12 @@
+# Large binary artifacts — not tracked in git
+*.tar.gz
+
+# OCI PAR URLs (sensitive)
+par.txt
+
+# release/image and release/volume contain machine-local symlinks to large files
+release/image/
+release/volume/
+
+# Local cache / logs
+.frugal-ri/
