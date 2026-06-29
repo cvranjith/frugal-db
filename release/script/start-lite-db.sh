@@ -97,6 +97,13 @@ done
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: required tool not found: $1" >&2; exit 1; }; }
 is_tty()      { [[ -t 1 ]]; }
 
+# Print timestamped line to console AND append to log file (if set).
+log() {
+  local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  printf '[%s] %s\n' "$ts" "$*"
+  [[ -n "${log_file:-}" ]] && printf '[%s] %s\n' "$ts" "$*" >> "$log_file"
+}
+
 # Cross-platform sha256: works on macOS (shasum), Linux, and Git Bash (sha256sum)
 sha256_of() {
   if command -v shasum >/dev/null 2>&1; then
@@ -275,7 +282,7 @@ _restore_volume() {
   local progress_log; progress_log=$(mktemp)
   local w=45
 
-  printf '  Restoring %s (%dM)...\n' "$vol_base" "$sz_mb"
+  log "  Restoring $vol_base (${sz_mb}M)..."
 
   docker run --rm $DOCKER_PLATFORM \
     --user root --entrypoint /bin/bash \
@@ -300,9 +307,10 @@ _restore_volume() {
   if [[ "$rc" -eq 0 ]]; then
     _draw_bar "$sz" "$sz" "${sz_mb}M / ${sz_mb}M  done"
     printf '\n'
+    log "  Restore complete: $vol_base (${sz_mb}M)"
   else
     printf '\n'
-    printf '  ERROR: volume restore failed (exit %d)\n' "$rc" >&2
+    log "  ERROR: volume restore failed (exit $rc)" >&2
     printf '  Docker output:\n' >&2
     cat "$progress_log" >&2
   fi
@@ -314,7 +322,7 @@ download_artifact() {
   local url="$1" dest="$2" expected_sha="$3" label="$4"
   local tmp="$dest.tmp.$$"
   mkdir -p "$(dirname "$dest")"
-  echo "  Downloading $label"
+  log "  Downloading $label"
 
   local total=0
   total=$(curl -fsSI --connect-timeout 10 "$url" 2>/dev/null \
@@ -339,6 +347,7 @@ download_artifact() {
   cur=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp" 2>/dev/null || echo 0)
   _draw_bar "$cur" "${total:-$cur}" "done"
   printf '\n'
+  log "  Downloaded: $label ($(( cur / 1024 / 1024 ))M)"
 
   if [[ -n "$expected_sha" ]]; then
     local actual; actual="$(sha256_of "$tmp")"
@@ -415,6 +424,20 @@ wait_until_ready() {
 # ── main ──────────────────────────────────────────────────────────────────────
 # preflight already ran above — all tools verified
 
+# ── interactive tag / log setup ──────────────────────────────────────────────
+if [[ -z "$runtime_tag" ]]; then
+  runtime_tag="$(prompt_default "Runtime tag" "dev-001")"
+fi
+validate_tag "$runtime_tag"
+
+container_name="${runtime_tag}-db"
+network_name="${runtime_tag}-net"
+volume_name="${runtime_tag}-oradata"
+[[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}/share"
+log_dir="$store_dir/log"
+log_file="$log_dir/${container_name}-$(date '+%Y%m%d-%H%M%S').log"
+mkdir -p "$log_dir"
+
 # ── resolve image ─────────────────────────────────────────────────────────────
 resolved_docker_tag=""
 resolved_image_file=""
@@ -423,7 +446,7 @@ if [[ -n "$image_tar_file" ]]; then
   # direct local file — load it; we'll discover the tag after load
   [[ -f "$image_tar_file" ]] || { echo "Image tar not found: $image_tar_file" >&2; exit 1; }
   resolved_image_file="$image_tar_file"
-  echo "Loading image from local file: $image_tar_file"
+  log "Loading image from local file: $image_tar_file"
   gzip -dc "$resolved_image_file" | docker load
   # assume the tag is whatever the user passed via --image (if any)
   resolved_docker_tag="${image_tag:-}"
@@ -431,19 +454,19 @@ else
   need_manifest
   IFS=$'\t' read -r resolved_docker_tag img_obj img_sha img_fname \
     < <(resolve_image_entry "$image_tag")
-  echo "Image: $resolved_docker_tag  (object: $img_obj)"
+  log "Image: $resolved_docker_tag  (object: $img_obj)"
 
   # check if already in docker
   if [[ "$force_download" -eq 0 ]] && docker image inspect "$resolved_docker_tag" >/dev/null 2>&1; then
-    echo "Image already present in Docker — skipping load."
+    log "Image already present in Docker — skipping load."
   else
     img_cache="$store_dir/images/$img_fname"
     if [[ "$force_download" -eq 0 ]] && sha256_matches "$img_cache" "$img_sha"; then
-      echo "Using cached image: $img_cache"
+      log "Using cached image: $img_cache"
     else
       download_artifact "${base_url%/}/${img_obj}" "$img_cache" "$img_sha" "image"
     fi
-    echo "Loading image: $img_cache"
+    log "Loading image: $img_cache"
     gzip -dc "$img_cache" | docker load
   fi
 
@@ -462,31 +485,11 @@ else
   need_manifest
   IFS=$'\t' read -r vol_obj vol_sha vol_fname oracle_sid oracle_pdb vol_version vol_tenancy \
     < <(resolve_volume_entry "$volume_version" "$tenancy")
-  echo "Volume: $vol_fname  (tenancy=$vol_tenancy, version=$vol_version)"
+  log "Volume: $vol_fname  (tenancy=$vol_tenancy, version=$vol_version)"
   resolved_volume_file="$store_dir/volumes/$vol_fname"
 fi
 
-# ── interactive tag / ports ───────────────────────────────────────────────────
-if [[ -z "$runtime_tag" ]]; then
-  runtime_tag="$(prompt_default "Runtime tag" "dev-001")"
-fi
-validate_tag "$runtime_tag"
-
-container_name="${runtime_tag}-db"
-network_name="${runtime_tag}-net"
-volume_name="${runtime_tag}-oradata"
-[[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}/share"
-log_dir="$store_dir/log"
-log_file="$log_dir/${container_name}-$(date '+%Y%m%d-%H%M%S').log"
-mkdir -p "$log_dir"
-
-# Tee all script stdout to terminal + timestamped log file from this point on.
-# The nohup docker-logs tail appends to the same file below.
-exec > >(while IFS= read -r _l; do
-  printf '%s\n' "$_l"
-  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_l" >> "$log_file"
-done) 2>&1
-
+# ── ports ─────────────────────────────────────────────────────────────────────
 if [[ -z "$db_port" ]]; then
   sug_db="$(find_available_port 2521 3521 4521 5521)"
   confirm "Use Oracle listener host port $sug_db" && db_port="$sug_db" \
@@ -504,7 +507,7 @@ docker volume ls -q 2>/dev/null | awk -v n="$volume_name" '$0==n' | grep -q . &&
 
 if [[ "$container_exists" -eq 1 ]]; then
   if [[ "$replace_existing" -eq 1 ]]; then
-    echo "Removing container: $container_name"; docker rm -f "$container_name" >/dev/null
+    log "Removing container: $container_name"; docker rm -f "$container_name" >/dev/null
   else
     echo "Container $container_name exists. Use --replace or a different --tag." >&2; exit 1
   fi
@@ -512,7 +515,7 @@ fi
 
 if [[ "$volume_exists" -eq 1 ]]; then
   if [[ "$replace_existing" -eq 1 ]]; then
-    echo "Removing volume: $volume_name"; docker volume rm "$volume_name" >/dev/null
+    log "Removing volume: $volume_name"; docker volume rm "$volume_name" >/dev/null
     volume_exists=0
   fi
 fi
@@ -521,20 +524,20 @@ fi
 docker network create "$network_name" >/dev/null 2>&1 || true
 
 if [[ "$volume_exists" -eq 1 ]]; then
-  echo "Reusing existing volume: $volume_name"
+  log "Reusing existing volume: $volume_name"
 else
   # download/verify seed only when we actually need to restore
   if [[ -n "$volume_tar_file" ]]; then
     [[ -f "$volume_tar_file" ]] || { echo "Volume tar not found: $volume_tar_file" >&2; exit 1; }
-    echo "Using local volume: $volume_tar_file"
+    log "Using local volume: $volume_tar_file"
   else
     if [[ "$force_download" -eq 0 ]] && sha256_matches "$resolved_volume_file" "$vol_sha"; then
-      echo "Using cached volume: $resolved_volume_file"
+      log "Using cached volume: $resolved_volume_file"
     else
       download_artifact "${base_url%/}/${vol_obj}" "$resolved_volume_file" "$vol_sha" "volume seed"
     fi
   fi
-  echo "Creating volume: $volume_name"
+  log "Creating volume: $volume_name"
   docker volume create "$volume_name" >/dev/null
   _restore_volume "$resolved_volume_file" "$volume_name" "$resolved_docker_tag"
 fi
@@ -546,7 +549,7 @@ shm_mb=$(printf '%s' "$sga_size" | awk '/G$/{print int($0)*1024} /M$/{print int(
 shm_arg="${sga_size}"
 
 mkdir -p "$share_dir"
-echo "Starting container: $container_name  (SGA=$sga_size  PGA=$pga_size)"
+log "Starting container: $container_name  (SGA=$sga_size  PGA=$pga_size)"
 docker run -dit $DOCKER_PLATFORM --name "$container_name" \
   --network "$network_name" \
   -p "$db_port:1521" \
