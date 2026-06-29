@@ -269,7 +269,7 @@ _restore_volume() {
   printf '  Restoring %s (%dM)...\n' "$vol_base" "$sz_mb"
 
   docker run --rm --platform linux/amd64 \
-    --user root --entrypoint /bin/sh \
+    --user root --entrypoint /bin/bash \
     -v "${vol}:/opt/oracle/oradata" \
     -v "${vol_dir}:/backup:ro" \
     "$img" \
@@ -285,14 +285,17 @@ _restore_volume() {
     sleep 0.5
   done
 
-  wait "$pid"; local rc=$?
+  # Use || to prevent set -e from firing before we can print the error
+  local rc=0
+  wait "$pid" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     _draw_bar "$sz" "$sz" "${sz_mb}M / ${sz_mb}M  done"
     printf '\n'
   else
     printf '\n'
     printf '  ERROR: volume restore failed (exit %d)\n' "$rc" >&2
-    [[ -s "$progress_log" ]] && { printf '  Docker output:\n' >&2; cat "$progress_log" >&2; }
+    printf '  Docker output:\n' >&2
+    cat "$progress_log" >&2
   fi
   rm -f "$progress_log"
   return "$rc"
