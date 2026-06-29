@@ -306,7 +306,7 @@ download_artifact() {
     | grep -i '^content-length:' | tail -1 | awk '{print $2}' | tr -d '\r\n' || true)
   [[ "$total" =~ ^[0-9]+$ ]] || total=0
 
-  curl --fail --location --show-error --no-progress-meter \
+  curl --fail --location --silent --show-error \
     --retry 3 --connect-timeout 20 -o "$tmp" "$url" &
   local pid=$! t0=$SECONDS cur=0
 

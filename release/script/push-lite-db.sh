@@ -112,7 +112,7 @@ upload_file() {
   sz="$(file_size "$f")"
   printf '  Uploading %-55s  %s bytes\n' "$obj" "$sz"
   [[ "$DRY_RUN" -eq 0 ]] || return 0
-  curl --fail --show-error --no-progress-meter --retry 3 --connect-timeout 20 \
+  curl --fail --show-error --silent --retry 3 --connect-timeout 20 \
     -X PUT --upload-file "$f" "$(obj_url "$RW_PAR" "$obj")" &
   local pid=$! pos=0 dir=1
   while kill -0 "$pid" 2>/dev/null; do
