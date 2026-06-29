@@ -478,6 +478,14 @@ volume_name="${runtime_tag}-oradata"
 [[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}/share"
 log_dir="$store_dir/log"
 log_file="$log_dir/${container_name}-$(date '+%Y%m%d-%H%M%S').log"
+mkdir -p "$log_dir"
+
+# Tee all script stdout to terminal + timestamped log file from this point on.
+# The nohup docker-logs tail appends to the same file below.
+exec > >(while IFS= read -r _l; do
+  printf '%s\n' "$_l"
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$_l" >> "$log_file"
+done) 2>&1
 
 if [[ -z "$db_port" ]]; then
   sug_db="$(find_available_port 2521 3521 4521 5521)"
@@ -552,10 +560,9 @@ docker run -dit $DOCKER_PLATFORM --name "$container_name" \
   --shm-size="$shm_arg" \
   "${resolved_docker_tag}" >/dev/null
 
-mkdir -p "$log_dir"
 nohup bash -c 'docker logs -f "$0" 2>&1 | while IFS= read -r line; do
   printf "[%s] %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
-done' "$container_name" > "$log_file" 2>/dev/null &
+done' "$container_name" >> "$log_file" 2>/dev/null &
 printf '%s\n' "$!" > "$log_file.pid"
 
 [[ "$wait_for_ready" -eq 1 ]] && wait_until_ready "$container_name" "$log_file"
