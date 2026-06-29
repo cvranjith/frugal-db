@@ -110,7 +110,7 @@ sha256_of() {
 
 # Cross-platform file size
 file_size_bytes() {
-  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null || \
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1" 2>/dev/null || \
     wc -c < "$1" | tr -d ' '
 }
 
@@ -311,7 +311,7 @@ download_artifact() {
   local pid=$! t0=$SECONDS cur=0
 
   while kill -0 "$pid" 2>/dev/null; do
-    cur=$(stat -f '%z' "$tmp" 2>/dev/null || stat -c '%s' "$tmp" 2>/dev/null || echo 0)
+    cur=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp" 2>/dev/null || echo 0)
     local elapsed=$(( SECONDS - t0 + 1 )) speed=$(( cur / (SECONDS - t0 + 1) )) speed_str
     if   [[ $speed -ge 1048576 ]]; then speed_str="$(( speed/1048576 )) MB/s"
     elif [[ $speed -ge 1024    ]]; then speed_str="$(( speed/1024 )) KB/s"
@@ -321,7 +321,7 @@ download_artifact() {
   done
   wait "$pid" || { echo >&2; rm -f "$tmp"; return 1; }
 
-  cur=$(stat -f '%z' "$tmp" 2>/dev/null || stat -c '%s' "$tmp" 2>/dev/null || echo 0)
+  cur=$(stat -c '%s' "$tmp" 2>/dev/null || stat -f '%z' "$tmp" 2>/dev/null || echo 0)
   _draw_bar "$cur" "${total:-$cur}" "done"
   printf '\n'
 

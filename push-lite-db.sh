@@ -53,7 +53,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 1; }; }
-file_size()   { stat -L -f '%z' "$1" 2>/dev/null || stat -L -c '%s' "$1"; }
+file_size()   { stat -L -c '%s' "$1" 2>/dev/null || stat -L -f '%z' "$1"; }
 sha256()      { shasum -a 256 "$1" | awk '{print $1}'; }
 
 normalize_prefix() {
