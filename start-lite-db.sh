@@ -49,7 +49,7 @@ Container options:
   --sga SIZE            Oracle SGA size (e.g. 1G, 1536M). Default: 1G.
   --pga SIZE            Oracle PGA size (e.g. 512M, 1G).  Default: 512M.
   --share DIR           Host directory mounted as /share inside the container.
-                        Default: ~/.frugal-ri/containers/<container-name>/
+                        Default: ~/.frugal-ri/containers/<container-name>/share/
                         Override with env var ORACLE_LITE_SHARE_DIR.
   --replace             Remove any existing container/volume with the same tag.
   --yes                 Accept suggested tag/ports without prompting.
@@ -475,7 +475,7 @@ validate_tag "$runtime_tag"
 container_name="${runtime_tag}-db"
 network_name="${runtime_tag}-net"
 volume_name="${runtime_tag}-oradata"
-[[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}"
+[[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}/share"
 log_dir="$store_dir/log"
 log_file="$log_dir/${container_name}-$(date '+%Y%m%d-%H%M%S').log"
 
