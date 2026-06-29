@@ -22,6 +22,7 @@ sga_size=""   # --sga SIZE  e.g. 1G, 2G (default: 1G)
 pga_size=""   # --pga SIZE  e.g. 512M, 1G (default: 512M)
 
 store_dir="${FRUGAL_RI_STORE:-${ORACLE_LITE_STORE_DIR:-$HOME/.frugal-ri}}"
+share_dir="${ORACLE_LITE_SHARE_DIR:-}"   # resolved after container_name is known
 base_url="${ORACLE_LITE_BASE_URL:-$DEFAULT_BASE_URL}"
 force_download=0
 replace_existing=0
@@ -45,8 +46,11 @@ Artifact selection (all optional — resolved from manifest when omitted):
 Container options:
   --tag TAG             Runtime tag for naming the container/volume (e.g. dev-001).
   --port PORT           Host port for Oracle listener (container 1521).
-  --sga SIZE            Oracle SGA size (e.g. 1G, 1536M). Default: ~40% of host RAM.
-  --pga SIZE            Oracle PGA size (e.g. 512M, 1G).  Default: ~20% of host RAM.
+  --sga SIZE            Oracle SGA size (e.g. 1G, 1536M). Default: 1G.
+  --pga SIZE            Oracle PGA size (e.g. 512M, 1G).  Default: 512M.
+  --share DIR           Host directory mounted as /share inside the container.
+                        Default: ~/.frugal-ri/containers/<container-name>/
+                        Override with env var ORACLE_LITE_SHARE_DIR.
   --replace             Remove any existing container/volume with the same tag.
   --yes                 Accept suggested tag/ports without prompting.
   --no-wait             Start and return without waiting for Oracle to become healthy.
@@ -82,6 +86,7 @@ while [[ $# -gt 0 ]]; do
     --yes)            assume_yes=1;             shift ;;
     --sga)            sga_size="${2:?}";         shift 2 ;;
     --pga)            pga_size="${2:?}";         shift 2 ;;
+    --share)          share_dir="${2:?}";        shift 2 ;;
     --no-wait)        wait_for_ready=0;         shift ;;
     -h|--help)        usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -455,6 +460,7 @@ validate_tag "$runtime_tag"
 container_name="${runtime_tag}-db"
 network_name="${runtime_tag}-net"
 volume_name="${runtime_tag}-oradata"
+[[ -z "$share_dir" ]] && share_dir="${store_dir}/containers/${container_name}"
 log_dir="$store_dir/log"
 log_file="$log_dir/${container_name}-$(date '+%Y%m%d-%H%M%S').log"
 
@@ -516,6 +522,7 @@ fi
 shm_mb=$(printf '%s' "$sga_size" | awk '/G$/{print int($0)*1024} /M$/{print int($0)}')
 shm_arg="${sga_size}"
 
+mkdir -p "$share_dir"
 echo "Starting container: $container_name  (SGA=$sga_size  PGA=$pga_size)"
 docker run -dit --name "$container_name" \
   --network "$network_name" \
@@ -526,6 +533,7 @@ docker run -dit --name "$container_name" \
   -e INIT_SGA_SIZE="$sga_size" \
   -e INIT_PGA_SIZE="$pga_size" \
   -v "$volume_name:/opt/oracle/oradata" \
+  -v "$share_dir:/share" \
   --shm-size="$shm_arg" \
   "${resolved_docker_tag}" >/dev/null
 
@@ -545,6 +553,7 @@ Oracle lite DB started.
   SGA / PGA : $sga_size / $pga_size
   Container : $container_name
   DB URL    : localhost:$db_port/$oracle_pdb
+  Shared    : $share_dir  →  /share
   Log       : $log_file
 
 Stop :  docker stop -t 120 $container_name
