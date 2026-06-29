@@ -255,10 +255,10 @@ _draw_bar() {
 }
 
 # Restore a tar.gz into a docker volume, showing a real percentage progress bar.
-# dd inside the container reads the compressed file and reports bytes via status=progress;
-# we poll those bytes against the known compressed file size for an accurate %.
+# Uses the already-loaded oracle image (no extra pull needed on air-gapped machines).
+# dd reads the compressed file and reports bytes via status=progress for accurate %.
 _restore_volume() {
-  local src="$1" vol="$2"
+  local src="$1" vol="$2" img="${3:-debian:bookworm-slim}"
   local sz; sz=$(file_size_bytes "$src")
   local sz_mb=$(( sz / 1024 / 1024 ))
   local vol_dir; vol_dir=$(cd "$(dirname "$src")" && pwd)
@@ -269,10 +269,11 @@ _restore_volume() {
   printf '  Restoring %s (%dM)...\n' "$vol_base" "$sz_mb"
 
   docker run --rm --platform linux/amd64 \
+    --user root --entrypoint /bin/sh \
     -v "${vol}:/opt/oracle/oradata" \
     -v "${vol_dir}:/backup:ro" \
-    debian:bookworm-slim \
-    sh -c "dd if='/backup/${vol_base}' bs=4M status=progress | gzip -dc | tar xf - -C /" \
+    "$img" \
+    -c "dd if='/backup/${vol_base}' bs=4M status=progress | gzip -dc | tar xf - -C /" \
     2>"$progress_log" &
   local pid=$!
 
@@ -285,13 +286,15 @@ _restore_volume() {
   done
 
   wait "$pid"; local rc=$?
-  rm -f "$progress_log"
   if [[ "$rc" -eq 0 ]]; then
     _draw_bar "$sz" "$sz" "${sz_mb}M / ${sz_mb}M  done"
     printf '\n'
   else
-    printf '\n  ERROR: volume restore failed (exit %d)\n' "$rc" >&2
+    printf '\n'
+    printf '  ERROR: volume restore failed (exit %d)\n' "$rc" >&2
+    [[ -s "$progress_log" ]] && { printf '  Docker output:\n' >&2; cat "$progress_log" >&2; }
   fi
+  rm -f "$progress_log"
   return "$rc"
 }
 
@@ -513,7 +516,7 @@ else
   fi
   echo "Creating volume: $volume_name"
   docker volume create "$volume_name" >/dev/null
-  _restore_volume "$resolved_volume_file" "$volume_name"
+  _restore_volume "$resolved_volume_file" "$volume_name" "$resolved_docker_tag"
 fi
 
 [[ -z "$sga_size" ]] && sga_size="1G"
