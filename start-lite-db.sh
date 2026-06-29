@@ -553,7 +553,9 @@ docker run -dit $DOCKER_PLATFORM --name "$container_name" \
   "${resolved_docker_tag}" >/dev/null
 
 mkdir -p "$log_dir"
-nohup docker logs -f "$container_name" > "$log_file" 2>&1 &
+nohup bash -c 'docker logs -f "$0" 2>&1 | while IFS= read -r line; do
+  printf "[%s] %s\n" "$(date "+%Y-%m-%d %H:%M:%S")" "$line"
+done' "$container_name" > "$log_file" 2>/dev/null &
 printf '%s\n' "$!" > "$log_file.pid"
 
 [[ "$wait_for_ready" -eq 1 ]] && wait_until_ready "$container_name" "$log_file"
