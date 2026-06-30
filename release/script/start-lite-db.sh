@@ -230,11 +230,12 @@ need_manifest() {
 # Returns TAB-separated: docker_tag  object  sha256  file_name
 resolve_image_entry() {
   local label="$1" result
-  [[ -z "$label" ]] && label="$(jq -r '.default_image_label // "default"' "$MANIFEST_CACHE")"
+  [[ -z "$label" ]] && label="$(jq -r '.default_image_label // "default"' "$MANIFEST_CACHE" || true)"
+  # Use // empty (not error()) so jq exits 0 on missing key; || true guards set -e
   result=$(jq -r --arg label "$label" '
-    (.images[$label] // error("no image for label: \($label)"))
+    .images[$label] // empty
     | [.docker_tag, .object, (.sha256 // ""), (.file_name // "")] | @tsv
-  ' "$MANIFEST_CACHE" 2>/dev/null)
+  ' "$MANIFEST_CACHE") || true
   [[ -z "$result" ]] && { echo "ERROR: no manifest entry for image label: $label" >&2; exit 1; }
   printf '%s\n' "$result"
 }
@@ -245,18 +246,18 @@ resolve_volume_entry() {
   if [[ -z "$version" ]]; then
     resolved_ver="$(jq -r --arg e "$entity" '
       (.volumes[$e] // {}) | keys | sort | last // ""
-    ' "$MANIFEST_CACHE")"
+    ' "$MANIFEST_CACHE")" || true
     [[ -z "$resolved_ver" ]] && {
       echo "ERROR: no volumes for entity=$entity in manifest" >&2; exit 1; }
   else
     resolved_ver="$version"
   fi
   result=$(jq -r --arg e "$entity" --arg v "$resolved_ver" '
-    (.volumes[$e][$v] // error("no volume for entity \($e) version \($v)"))
+    .volumes[$e][$v] // empty
     | [.object, (.sha256 // ""), (.file_name // ""),
        (.oracle_sid // "OBCDB"), (.oracle_pdb // "OBPMDB"),
        ($v), ($e)] | @tsv
-  ' "$MANIFEST_CACHE" 2>/dev/null)
+  ' "$MANIFEST_CACHE") || true
   [[ -z "$result" ]] && {
     echo "ERROR: no volume for entity=$entity version=$resolved_ver" >&2; exit 1; }
   printf '%s\n' "$result"
