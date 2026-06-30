@@ -463,12 +463,12 @@ else
     < <(resolve_image_entry "$image_label")
   log "Image: $resolved_docker_tag  (label: ${image_label:-default}  object: $img_obj)"
 
-  # check if already in docker
-  if [[ "$force_download" -eq 0 ]] && docker image inspect "$resolved_docker_tag" >/dev/null 2>&1; then
+  # check if already in docker — always, regardless of force_download
+  if docker image inspect "$resolved_docker_tag" >/dev/null 2>&1; then
     log "Image already present in Docker — skipping load."
   else
     img_cache="$store_dir/images/$img_fname"
-    if [[ "$force_download" -eq 0 ]] && sha256_matches "$img_cache" "$img_sha"; then
+    if sha256_matches "$img_cache" "$img_sha"; then
       log "Using cached image: $img_cache"
     else
       download_artifact "${base_url%/}/${img_obj}" "$img_cache" "$img_sha" "image"
@@ -538,7 +538,7 @@ else
     [[ -f "$volume_tar_file" ]] || { echo "Volume tar not found: $volume_tar_file" >&2; exit 1; }
     log "Using local volume: $volume_tar_file"
   else
-    if [[ "$force_download" -eq 0 ]] && sha256_matches "$resolved_volume_file" "$vol_sha"; then
+    if sha256_matches "$resolved_volume_file" "$vol_sha"; then
       log "Using cached volume: $resolved_volume_file"
     else
       download_artifact "${base_url%/}/${vol_obj}" "$resolved_volume_file" "$vol_sha" "volume seed"
