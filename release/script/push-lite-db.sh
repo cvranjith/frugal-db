@@ -54,7 +54,13 @@ done
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required tool: $1" >&2; exit 1; }; }
 file_size()   { stat -L -c '%s' "$1" 2>/dev/null || stat -L -f '%z' "$1"; }
-sha256()      { shasum -a 256 "$1" | awk '{print $1}'; }
+sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
 
 normalize_prefix() {
   local p="${1#/}"; [[ -n "$p" && "$p" != */ ]] && p="$p/"; printf '%s' "$p"
@@ -118,7 +124,9 @@ upload_file() {
   printf '\r  [%s] done\n' "$(printf '=%.0s' $(seq 1 $((w-1))))>"
 }
 
-require_cmd curl; require_cmd gzip; require_cmd jq; require_cmd shasum; require_cmd find
+require_cmd curl; require_cmd gzip; require_cmd jq; require_cmd find
+{ command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; } || \
+  { echo "Missing required tool: need shasum or sha256sum" >&2; exit 1; }
 
 [[ -d "$RELEASE_DIR/image"  ]] || { echo "Missing: $RELEASE_DIR/image"  >&2; exit 1; }
 [[ -d "$RELEASE_DIR/volume" ]] || { echo "Missing: $RELEASE_DIR/volume" >&2; exit 1; }
