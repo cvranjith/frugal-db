@@ -11,7 +11,7 @@ set -euo pipefail
 RW_PAR="https://objectstorage.ap-seoul-1.oraclecloud.com/p/WXMu3kJ6I_-J8lTFRKCshm99SdzIrx_tl6MIecGJq7t6153PTKYYrIGuqKoa0_Ra/n/cnvubmbktlyh/b/artifactory/o/"
 RO_PAR="https://objectstorage.ap-seoul-1.oraclecloud.com/p/oubSLJc6Z8bkdxLeekGQCP_tFWmFPS7v4kRztFt6icRR8iaYdOFK4Kks1Tghgcny/n/cnvubmbktlyh/b/artifactory/o/"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 if [[ "$(basename "$SCRIPT_DIR")" == "script" ]]; then
   RELEASE_DIR="$(dirname "$SCRIPT_DIR")"
 else
