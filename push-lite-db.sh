@@ -89,18 +89,6 @@ read_image_tag() {
     | jq -r '.[0].RepoTags[0] // ""'
 }
 
-parse_volume_meta() {
-  local name; name="$(basename "$1")"
-  local tenancy="" version=""
-  if [[ "$name" =~ ^oracle-volume-([^-]+)-v([0-9]{8}) ]]; then
-    tenancy="${BASH_REMATCH[1]}"
-    version="${BASH_REMATCH[2]}"
-  else
-    tenancy="default"
-    version="$(printf '%s' "$name" | grep -oE '[0-9]{8}' | head -1 || true)"
-  fi
-  printf '%s\t%s\n' "$tenancy" "${version:-}"
-}
 
 fetch_remote_manifest() {
   curl -fsSL --retry 2 --connect-timeout 10 \
@@ -152,118 +140,158 @@ UPLOADS="$TMP/uploads.tsv"
 if fetch_remote_manifest "$REMOTE_MF"; then mf_state="found"; else : > "$REMOTE_MF"; mf_state="not found"; fi
 
 # ── collect files ─────────────────────────────────────────────────────────────
+# Separate JSONL files so we can build structured manifest sections cleanly.
+IMG_E="$TMP/img.jsonl"; VOL_E="$TMP/vol.jsonl"; SCR_E="$TMP/scr.jsonl"
+: > "$IMG_E" > "$VOL_E" > "$SCR_E"
 n=0
-latest_docker_tag=""
 
-while IFS= read -r src; do
-  rel="${src#$RELEASE_DIR/}"; topdir="${rel%%/*}"; base="$(basename "$src")"
-  [[ "$base" == *.meta.json ]] && continue
-
-  case "$topdir" in
-    image)
-      pub="$(ensure_gz "$src")"; pname="$(basename "$pub")"
-      docker_tag="$(read_image_tag "$src")"
-      [[ -z "$docker_tag" ]] && {
-        echo "ERROR: no RepoTags in $src (not a valid docker image tar?)" >&2; exit 1; }
-      sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
-      obj="${PREFIX}image/${pname}"
-      jq -n \
-        --arg type "image" --arg object "${obj#$PREFIX}" --arg file_name "$pname" \
-        --argjson size_bytes "$sz" --arg sha256 "$sha" --arg docker_tag "$docker_tag" \
-        '{type:$type,object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256,docker_tag:$docker_tag}' \
-        >> "$ENTRIES"
-      latest_docker_tag="$docker_tag"
-      ;;
-    volume)
-      pub="$(ensure_gz "$src")"; pname="$(basename "$pub")"
-      IFS=$'\t' read -r vc_tenancy vc_version < <(parse_volume_meta "$pub")
-      oracle_sid="OBCDB"; oracle_pdb="OBPMDB"
-      if [[ -f "$src.meta.json" ]]; then
-        v="$(jq -r '.oracle_sid // ""' "$src.meta.json")"; [[ -n "$v" ]] && oracle_sid="$v"
-        v="$(jq -r '.oracle_pdb // ""' "$src.meta.json")"; [[ -n "$v" ]] && oracle_pdb="$v"
-      fi
-      sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
-      obj="${PREFIX}volume/${pname}"
-      jq -n \
-        --arg type "volume" --arg object "${obj#$PREFIX}" --arg file_name "$pname" \
-        --argjson size_bytes "$sz" --arg sha256 "$sha" \
-        --arg tenancy "$vc_tenancy" --arg version "$vc_version" \
-        --arg oracle_sid "$oracle_sid" --arg oracle_pdb "$oracle_pdb" \
-        '{type:$type,object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256,
-          tenancy:$tenancy,version:$version,oracle_sid:$oracle_sid,oracle_pdb:$oracle_pdb}' \
-        >> "$ENTRIES"
-      ;;
-    script)
-      pub="$src"
-      if [[ "$base" == "start-lite-db.sh" ]]; then
-        pub="$TMP/start-lite-db.sh"
-        awk -v base="$RO_PREFIX" '
-          /^DEFAULT_BASE_URL=/ && !done { print "DEFAULT_BASE_URL=\"" base "\""; done=1; next }
-          { print }
-        ' "$src" > "$pub"; chmod +x "$pub"
-      fi
-      sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
-      obj="${PREFIX}script/${base}"
-      jq -n \
-        --arg type "script" --arg object "${obj#$PREFIX}" --arg file_name "$base" \
-        --argjson size_bytes "$sz" --arg sha256 "$sha" \
-        '{type:$type,object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256}' \
-        >> "$ENTRIES"
-      ;;
-    *) echo "Skipping $src" >&2; continue ;;
-  esac
-
-  remote_sha=""
-  if [[ -s "$REMOTE_MF" ]]; then
-    remote_sha="$(jq -r --arg o "${obj#$PREFIX}" '.files[$o].sha256 // ""' "$REMOTE_MF")"
-  fi
-  status="upload"; [[ "$remote_sha" == "$sha" ]] && status="skip"
+_add_upload() {
+  local pub="$1" obj="$2" sha="$3" sz="$4"
+  local remote_sha=""
+  [[ -s "$REMOTE_MF" ]] && remote_sha="$(jq -r --arg o "${obj#$PREFIX}" '.files[$o].sha256 // ""' "$REMOTE_MF")"
+  local status="upload"; [[ "$remote_sha" == "$sha" ]] && status="skip"
   printf '%s\t%s\t%s\t%s\t%s\n' "$status" "$pub" "$obj" "$sz" "$sha" >> "$UPLOADS"
   n=$((n+1))
-done < <(find -L "$RELEASE_DIR/image" "$RELEASE_DIR/volume" "$RELEASE_DIR/script" \
-  -maxdepth 1 -type f ! -name '.*' | sort)
+}
 
+# Images: release/image/<label>/<file>
+while IFS= read -r src; do
+  base="$(basename "$src")"; [[ "$base" == *.meta.json ]] && continue
+  rel="${src#$RELEASE_DIR/image/}"   # <label>/<file>
+  label="${rel%%/*}"                  # <label>
+  pub="$(ensure_gz "$src")"; pname="$(basename "$pub")"
+  docker_tag="$(read_image_tag "$src")"
+  [[ -z "$docker_tag" ]] && { echo "ERROR: no RepoTags in $src" >&2; exit 1; }
+  sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
+  obj="${PREFIX}image/${label}/${pname}"
+  jq -n --arg label "$label" --arg object "${obj#$PREFIX}" --arg file_name "$pname" \
+        --argjson size_bytes "$sz" --arg sha256 "$sha" --arg docker_tag "$docker_tag" \
+    '{label:$label,object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256,docker_tag:$docker_tag}' \
+    >> "$IMG_E"
+  _add_upload "$pub" "$obj" "$sha" "$sz"
+done < <(find -L "$RELEASE_DIR/image" -mindepth 2 -maxdepth 2 -type f ! -name '.*' | sort)
+
+# Volumes: release/volume/<entity>/<version>/<file>
+while IFS= read -r src; do
+  base="$(basename "$src")"; [[ "$base" == *.meta.json ]] && continue
+  rel="${src#$RELEASE_DIR/volume/}"  # <entity>/<version>/<file>
+  entity="${rel%%/*}"                 # <entity>
+  rest="${rel#*/}"                    # <version>/<file>
+  version="${rest%%/*}"               # <version>
+  pub="$(ensure_gz "$src")"; pname="$(basename "$pub")"
+  oracle_sid="OBCDB"; oracle_pdb="OBPMDB"
+  if [[ -f "${src}.meta.json" ]]; then
+    v="$(jq -r '.oracle_sid // ""' "${src}.meta.json")"; [[ -n "$v" ]] && oracle_sid="$v"
+    v="$(jq -r '.oracle_pdb // ""' "${src}.meta.json")"; [[ -n "$v" ]] && oracle_pdb="$v"
+  fi
+  sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
+  obj="${PREFIX}volume/${entity}/${version}/${pname}"
+  jq -n --arg entity "$entity" --arg version "$version" \
+        --arg object "${obj#$PREFIX}" --arg file_name "$pname" \
+        --argjson size_bytes "$sz" --arg sha256 "$sha" \
+        --arg oracle_sid "$oracle_sid" --arg oracle_pdb "$oracle_pdb" \
+    '{entity:$entity,version:$version,object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256,oracle_sid:$oracle_sid,oracle_pdb:$oracle_pdb}' \
+    >> "$VOL_E"
+  _add_upload "$pub" "$obj" "$sha" "$sz"
+done < <(find -L "$RELEASE_DIR/volume" -mindepth 3 -maxdepth 3 -type f ! -name '.*' | sort)
+
+# Scripts: release/script/<file>  (flat)
+while IFS= read -r src; do
+  base="$(basename "$src")"
+  pub="$src"
+  if [[ "$base" == "start-lite-db.sh" ]]; then
+    pub="$TMP/start-lite-db.sh"
+    awk -v base="$RO_PREFIX" '
+      /^DEFAULT_BASE_URL=/ && !done { print "DEFAULT_BASE_URL=\"" base "\""; done=1; next }
+      { print }
+    ' "$src" > "$pub"; chmod +x "$pub"
+  fi
+  sha="$(sha256 "$pub")"; sz="$(file_size "$pub")"
+  obj="${PREFIX}script/${base}"
+  jq -n --arg object "${obj#$PREFIX}" --arg file_name "$base" \
+        --argjson size_bytes "$sz" --arg sha256 "$sha" \
+    '{object:$object,file_name:$file_name,size_bytes:$size_bytes,sha256:$sha256}' \
+    >> "$SCR_E"
+  _add_upload "$pub" "$obj" "$sha" "$sz"
+done < <(find -L "$RELEASE_DIR/script" -maxdepth 1 -type f ! -name '.*' | sort)
+
+cat "$IMG_E" "$VOL_E" "$SCR_E" > "$ENTRIES"
 [[ $n -eq 0 ]] && { echo "No files found." >&2; exit 1; }
 
 # ── build manifest ─────────────────────────────────────────────────────────────
-remote_json="{}"
-[[ -s "$REMOTE_MF" ]] && remote_json="$(cat "$REMOTE_MF")"
+remote_json="{}"; [[ -s "$REMOTE_MF" ]] && remote_json="$(cat "$REMOTE_MF")"
 
+# Structured images section: { "<label>": { docker_tag, object, ... } }
+images_json="$(jq -s '
+  map({ (.label): {docker_tag:.docker_tag,object:.object,file_name:.file_name,sha256:.sha256,size_bytes:.size_bytes} })
+  | add // {}
+' "$IMG_E")"
+
+# Structured volumes section: { "<entity>": { "<version>": { object, ... } } }
+volumes_json="$(jq -s '
+  group_by(.entity)
+  | map({
+      (.[0].entity): (
+        map({ (.version): {object:.object,file_name:.file_name,sha256:.sha256,size_bytes:.size_bytes,oracle_sid:.oracle_sid,oracle_pdb:.oracle_pdb} })
+        | add
+      )
+    })
+  | add // {}
+' "$VOL_E")"
+
+# flat files dict for SHA-based dedup on next push
 files_json="$(jq -s 'map({(.object): .}) | add // {}' "$ENTRIES")"
 
-launcher_json="$(jq -s '[.[] | select(.type=="script" and .file_name=="start-lite-db.sh")] | last // null' "$ENTRIES")"
+# default image label: "default" if present, else first label alphabetically
+default_image_label="$(jq -r 'if has("default") then "default" else (keys | sort | first // "") end' <<<"$images_json")"
+
+launcher_json="$(jq -s '[.[] | select(.file_name=="start-lite-db.sh")] | last // null' "$SCR_E")"
 
 jq -n \
   --argjson remote   "$remote_json" \
+  --argjson images   "$images_json" \
+  --argjson volumes  "$volumes_json" \
   --argjson files    "$files_json" \
   --argjson launcher "$launcher_json" \
-  --arg channel   "$CHANNEL" \
-  --arg prefix    "$PREFIX" \
-  --arg now       "$NOW" \
-  --arg ro_prefix "$RO_PREFIX" \
-  --arg def_img   "$latest_docker_tag" \
+  --arg channel      "$CHANNEL" \
+  --arg prefix       "$PREFIX" \
+  --arg now          "$NOW" \
+  --arg ro_prefix    "$RO_PREFIX" \
+  --arg def_label    "$default_image_label" \
   '
+    # Merge new images/volumes INTO the existing remote entries.
+    # Entries not present locally are preserved so the manifest
+    # accumulates history; "latest" is resolved at pull-time by the
+    # start script (highest alphabetical version key).
     $remote
-    | del(.runtime_image, .volume_seed)
-    | .name              = "oracle-lite-db"
-    | .channel           = $channel
-    | .published_at      = $now
-    | .prefix            = $prefix
+    | del(.runtime_image, .volume_seed, .default_image)
+    | .name                 = "oracle-lite-db"
+    | .channel              = $channel
+    | .published_at         = $now
+    | .prefix               = $prefix
     | .read_only_prefix_url = $ro_prefix
-    | if $def_img != "" then .default_image = $def_img else . end
-    | .files             = ((.files // {}) * $files)
+    | if $def_label != "" then .default_image_label = $def_label else . end
+    | .images               = ((.images  // {}) * $images)
+    | .volumes              = (
+        (.volumes // {}) as $old |
+        reduce ($volumes | to_entries[]) as $ent (
+          $old;
+          .[$ent.key] = ((.[$ent.key] // {}) * $ent.value)
+        )
+      )
+    | .files                = ((.files   // {}) * $files)
     | if $launcher != null then .launcher = $launcher else . end
   ' > "$LOCAL_MF"
 
 # ── plan summary ───────────────────────────────────────────────────────────────
 cat <<EOF
 Publish plan
-  Release dir : $RELEASE_DIR
-  Prefix      : $PREFIX
-  Remote mf   : $mf_state
-  Default img : ${latest_docker_tag:-"(none)"}
-  RW target   : $(redact "$(prefix_url "$RW_PAR" "$PREFIX")")
-  RO prefix   : $(redact "$RO_PREFIX")
+  Release dir   : $RELEASE_DIR
+  Prefix        : $PREFIX
+  Remote mf     : $mf_state
+  Default label : ${default_image_label:-"(none)"}
+  RW target     : $(redact "$(prefix_url "$RW_PAR" "$PREFIX")")
+  RO prefix     : $(redact "$RO_PREFIX")
 
 Objects:
 EOF

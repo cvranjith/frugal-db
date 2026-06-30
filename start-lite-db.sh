@@ -9,11 +9,11 @@ set -euo pipefail
 DEFAULT_BASE_URL=""
 
 # ── tunables ─────────────────────────────────────────────────────────────────
-image_tag=""          # --image TAG         (docker tag; default: manifest.default_image)
+image_label=""        # --image LABEL       (image label/slot; default: manifest.default_image_label)
 image_tar_file=""     # --image-tar FILE    (local file; bypasses manifest/download)
-volume_version=""     # --volume VERSION    (date string e.g. 20260629; default: latest)
+volume_version=""     # --volume VERSION    (version folder e.g. 20260629; default: latest)
 volume_tar_file=""    # --volume-tar FILE   (local file; bypasses manifest/download)
-tenancy="default"     # --tenancy CODE      (e.g. default, IN, SG)
+tenancy=""            # --tenancy NAME      (entity/slot name; default: "default")
 
 runtime_tag=""
 db_port=""
@@ -35,13 +35,14 @@ Usage:
   ./start-lite-db.sh [options]
 
 Artifact selection (all optional — resolved from manifest when omitted):
-  --image TAG           Docker image tag to use (e.g. oracle-db-slim:19.3.0-r5).
-                        If not in local Docker, the image is downloaded and loaded.
+  --image LABEL         Image label/slot to use (default: manifest.default_image_label).
+                        e.g. default, full — maps to image/<label>/ in the artifact store.
   --image-tar FILE      Use this local .tar.gz directly (skips manifest/download).
-  --volume VERSION      Volume seed version, e.g. 20260629 (default: latest).
+  --volume VERSION      Volume version to use (default: latest in entity folder, highest alpha).
+                        e.g. 20260629 — maps to volume/<entity>/<version>/ in the artifact store.
   --volume-tar FILE     Use this local .tar.gz directly (skips manifest/download).
-  --tenancy CODE        Tenancy filter for volume selection (default: "default").
-                        e.g. IN, SG — only used when --volume-tar is not given.
+  --tenancy NAME        Entity/tenancy slot for volume selection (default: "default").
+                        e.g. insg — only used when --volume-tar is not given.
 
 Container options:
   --tag TAG             Runtime tag for naming the container/volume (e.g. dev-001).
@@ -65,14 +66,15 @@ Download options:
 Examples:
   ./start-lite-db.sh
   ./start-lite-db.sh --tag dev-001 --port 2521 --yes
-  ./start-lite-db.sh --tenancy IN --tag dev-in-01
-  ./start-lite-db.sh --image oracle-db-slim:19.3.0-r5 --volume 20260629
+  ./start-lite-db.sh --tenancy insg --tag dev-insg-01
+  ./start-lite-db.sh --image full --volume 20260629
+  ./start-lite-db.sh --tenancy insg --volume 20260630 --tag mydb
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)          image_tag="${2:?}";       shift 2 ;;
+    --image)          image_label="${2:?}";     shift 2 ;;
     --image-tar)      image_tar_file="${2:?}";  shift 2 ;;
     --volume)         volume_version="${2:?}";  shift 2 ;;
     --volume-tar)     volume_tar_file="${2:?}"; shift 2 ;;
@@ -227,34 +229,36 @@ need_manifest() {
 
 # Returns TAB-separated: docker_tag  object  sha256  file_name
 resolve_image_entry() {
-  local tag="$1" search result
-  search="${tag:-$(jq -r '.default_image // ""' "$MANIFEST_CACHE")}"
-  [[ -z "$search" ]] && { echo "ERROR: no --image given and no default_image in manifest" >&2; exit 1; }
-  result=$(jq -r --arg t "$search" '
-    .files | to_entries[]
-    | select(.value.type == "image" and .value.docker_tag == $t)
-    | [.value.docker_tag, .key, (.value.sha256 // ""), (.value.file_name // "")] | @tsv
-  ' "$MANIFEST_CACHE")
-  [[ -z "$result" ]] && { echo "ERROR: no manifest entry for image tag: $search" >&2; exit 1; }
+  local label="$1" result
+  [[ -z "$label" ]] && label="$(jq -r '.default_image_label // "default"' "$MANIFEST_CACHE")"
+  result=$(jq -r --arg label "$label" '
+    (.images[$label] // error("no image for label: \($label)"))
+    | [.docker_tag, .object, (.sha256 // ""), (.file_name // "")] | @tsv
+  ' "$MANIFEST_CACHE" 2>/dev/null)
+  [[ -z "$result" ]] && { echo "ERROR: no manifest entry for image label: $label" >&2; exit 1; }
   printf '%s\n' "$result"
 }
 
-# Returns TAB-separated: object  sha256  file_name  oracle_sid  oracle_pdb  version  tenancy
+# Returns TAB-separated: object  sha256  file_name  oracle_sid  oracle_pdb  version  entity
 resolve_volume_entry() {
-  local version="$1" ten="$2" result
-  result=$(jq -r --arg ten "$ten" --arg ver "$version" '
-    [.files | to_entries[]
-     | select(.value.type == "volume" and ((.value.tenancy // "default") == $ten))
-     | .value]
-    | if $ver != "" then map(select(.version == $ver)) else . end
-    | if length == 0 then error("no matching volume") else . end
-    | sort_by(.version) | reverse | .[0]
-    | [(.object // ""), (.sha256 // ""), (.file_name // ""),
+  local version="$1" entity="${2:-default}" result resolved_ver
+  if [[ -z "$version" ]]; then
+    resolved_ver="$(jq -r --arg e "$entity" '
+      (.volumes[$e] // {}) | keys | sort | last // ""
+    ' "$MANIFEST_CACHE")"
+    [[ -z "$resolved_ver" ]] && {
+      echo "ERROR: no volumes for entity=$entity in manifest" >&2; exit 1; }
+  else
+    resolved_ver="$version"
+  fi
+  result=$(jq -r --arg e "$entity" --arg v "$resolved_ver" '
+    (.volumes[$e][$v] // error("no volume for entity \($e) version \($v)"))
+    | [.object, (.sha256 // ""), (.file_name // ""),
        (.oracle_sid // "OBCDB"), (.oracle_pdb // "OBPMDB"),
-       (.version // ""), (.tenancy // "default")] | @tsv
+       ($v), ($e)] | @tsv
   ' "$MANIFEST_CACHE" 2>/dev/null)
   [[ -z "$result" ]] && {
-    echo "ERROR: no volumes for tenancy=$ten${version:+ version=$version}" >&2; exit 1; }
+    echo "ERROR: no volume for entity=$entity version=$resolved_ver" >&2; exit 1; }
   printf '%s\n' "$result"
 }
 
@@ -443,18 +447,17 @@ resolved_docker_tag=""
 resolved_image_file=""
 
 if [[ -n "$image_tar_file" ]]; then
-  # direct local file — load it; we'll discover the tag after load
   [[ -f "$image_tar_file" ]] || { echo "Image tar not found: $image_tar_file" >&2; exit 1; }
   resolved_image_file="$image_tar_file"
+  resolved_docker_tag="$(tar xOf "$image_tar_file" manifest.json 2>/dev/null \
+    | jq -r '.[0].RepoTags[0] // ""')"
   log "Loading image from local file: $image_tar_file"
   gzip -dc "$resolved_image_file" | docker load
-  # assume the tag is whatever the user passed via --image (if any)
-  resolved_docker_tag="${image_tag:-}"
 else
   need_manifest
   IFS=$'\t' read -r resolved_docker_tag img_obj img_sha img_fname \
-    < <(resolve_image_entry "$image_tag")
-  log "Image: $resolved_docker_tag  (object: $img_obj)"
+    < <(resolve_image_entry "$image_label")
+  log "Image: $resolved_docker_tag  (label: ${image_label:-default}  object: $img_obj)"
 
   # check if already in docker
   if [[ "$force_download" -eq 0 ]] && docker image inspect "$resolved_docker_tag" >/dev/null 2>&1; then
@@ -484,8 +487,8 @@ if [[ -n "$volume_tar_file" ]]; then
 else
   need_manifest
   IFS=$'\t' read -r vol_obj vol_sha vol_fname oracle_sid oracle_pdb vol_version vol_tenancy \
-    < <(resolve_volume_entry "$volume_version" "$tenancy")
-  log "Volume: $vol_fname  (tenancy=$vol_tenancy, version=$vol_version)"
+    < <(resolve_volume_entry "$volume_version" "${tenancy:-default}")
+  log "Volume: $vol_fname  (entity=$vol_tenancy, version=$vol_version)"
   resolved_volume_file="$store_dir/volumes/$vol_fname"
 fi
 
