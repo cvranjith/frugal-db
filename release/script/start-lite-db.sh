@@ -232,8 +232,9 @@ resolve_image_entry() {
   local label="$1" result
   [[ -z "$label" ]] && label="$(jq -r '.default_image_label // "default"' "$MANIFEST_CACHE" || true)"
   # Use // empty (not error()) so jq exits 0 on missing key; || true guards set -e
-  result=$(jq -r --arg label "$label" '
-    .images[$label] // empty
+  # Note: "label" is a jq keyword (label-break) — use "lbl" to avoid parse error on jq 1.5
+  result=$(jq -r --arg lbl "$label" '
+    .images[$lbl] // empty
     | [.docker_tag, .object, (.sha256 // ""), (.file_name // "")] | @tsv
   ' "$MANIFEST_CACHE") || true
   [[ -z "$result" ]] && { echo "ERROR: no manifest entry for image label: $label" >&2; exit 1; }
