@@ -210,12 +210,16 @@ sha256_matches() {
 # ── manifest helpers ──────────────────────────────────────────────────────────
 MANIFEST_CACHE="$store_dir/manifest.json"
 
+_manifest_fetched=0
+
 fetch_manifest() {
   local url="${base_url%/}/manifest.json" tmp="$MANIFEST_CACHE.tmp.$$"
   mkdir -p "$(dirname "$MANIFEST_CACHE")"
-  echo "Fetching manifest from $url"
-  curl --fail --location --show-error --retry 3 --connect-timeout 20 -o "$tmp" "$url"
+  log "Fetching manifest from $url"
+  curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 -o "$tmp" "$url" \
+    || { echo "ERROR: failed to fetch manifest from $url" >&2; rm -f "$tmp"; exit 1; }
   mv "$tmp" "$MANIFEST_CACHE"
+  _manifest_fetched=1
 }
 
 need_manifest() {
@@ -224,7 +228,7 @@ need_manifest() {
     echo "       Alternatively, supply --image-tar and --volume-tar directly." >&2
     exit 1
   fi
-  if [[ "$force_download" -eq 1 || ! -f "$MANIFEST_CACHE" ]]; then
+  if [[ "$_manifest_fetched" -eq 0 && ( "$force_download" -eq 1 || ! -f "$MANIFEST_CACHE" ) ]]; then
     fetch_manifest
   fi
 }
