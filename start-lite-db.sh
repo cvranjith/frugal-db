@@ -24,7 +24,7 @@ pga_size=""   # --pga SIZE  e.g. 512M, 1G (default: 512M)
 store_dir="${FRUGAL_RI_STORE:-${ORACLE_LITE_STORE_DIR:-$HOME/.frugal-ri}}"
 share_dir="${ORACLE_LITE_SHARE_DIR:-}"   # resolved after container_name is known
 base_url="${ORACLE_LITE_BASE_URL:-$DEFAULT_BASE_URL}"
-force_download=0
+force_download=1
 replace_existing=0
 assume_yes=0
 wait_for_ready=1
@@ -59,7 +59,8 @@ Container options:
 Download options:
   --base-url URL        Artifact base URL (overrides DEFAULT_BASE_URL).
   --store-dir DIR       Local cache directory (default: ~/.frugal-ri).
-  --force-download      Re-download even if local cache is valid.
+  --use-cache           Skip re-download if manifest/image/volume already cached locally.
+                        Default is always re-download to pick up the latest artifacts.
 
   -h, --help
 
@@ -83,7 +84,8 @@ while [[ $# -gt 0 ]]; do
     --port)           db_port="${2:?}";         shift 2 ;;
     --base-url)       base_url="${2:?}";        shift 2 ;;
     --store-dir|--cache-dir) store_dir="${2:?}"; shift 2 ;;
-    --force-download) force_download=1;         shift ;;
+    --force-download) force_download=1;         shift ;;  # kept for back-compat; now the default
+    --use-cache)      force_download=0;         shift ;;
     --replace)        replace_existing=1;       shift ;;
     --yes)            assume_yes=1;             shift ;;
     --sga)            sga_size="${2:?}";         shift 2 ;;
